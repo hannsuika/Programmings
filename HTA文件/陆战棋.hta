@@ -1,0 +1,632 @@
+<html>
+<head>
+<meta http-equiv="X-UA-Compatible" content="IE=9">
+<title>陆战棋·人机版</title>
+<hta:application
+  id="app"
+  applicationname="陆战棋"
+  border="dialog"
+  caption="yes"
+  maximizebutton="no"
+  scroll="auto"
+  singleinstance="yes"
+/>
+<style>
+body { font-family: "Microsoft YaHei", sans-serif; background: #f3f1e8; color: #222; text-align: center; }
+h2 { margin: 10px 0; }
+.controls { margin: 8px; }
+select, button { font-size: 14px; padding: 5px 7px; margin: 3px; }
+#status { min-height: 28px; margin: 8px; font-weight: bold; }
+table { margin: 0 auto; border-collapse: collapse; background: #d7c89c; border: 3px solid #554b35; }
+td { width: 58px; height: 42px; border: 1px solid #806f4c; cursor: pointer; font-size: 13px; font-weight: bold; }
+.rail { background: #eee5c8; }
+.camp { background: #b7d6a5; }
+.hq { background: #e7b6a2; }
+.deploy { background: #dce7f3; color: #486184; }
+.selected { outline: 3px solid #e33; outline-offset: -3px; }
+.ai { color: #9b1b1b; }
+.human { color: #173c91; }
+#legend { margin: 10px; font-size: 13px; }
+</style>
+<script language="JavaScript">
+var TYPES = [
+  {id:"flag", name:"军旗", rank:0, count:1},
+  {id:"mine", name:"地雷", rank:0, count:3},
+  {id:"bomb", name:"炸弹", rank:0, count:2},
+  {id:"marshal", name:"司令", rank:9, count:1},
+  {id:"general", name:"军长", rank:8, count:1},
+  {id:"division", name:"师长", rank:7, count:2},
+  {id:"brigade", name:"旅长", rank:6, count:2},
+  {id:"regiment", name:"团长", rank:5, count:2},
+  {id:"battalion", name:"营长", rank:4, count:2},
+  {id:"company", name:"连长", rank:3, count:3},
+  {id:"platoon", name:"排长", rank:2, count:3},
+  {id:"engineer", name:"工兵", rank:1, count:3}
+];
+
+var board = [];
+var remaining = {};
+var phase = "setup";
+var selected = null;
+var gameOver = false;
+var aiPending = false;
+
+function info(id) {
+  var i;
+  for (i = 0; i < TYPES.length; i++) {
+    if (TYPES[i].id == id) return TYPES[i];
+  }
+  return null;
+}
+
+function nameOf(id) {
+  var p = info(id);
+  return p ? p.name : "";
+}
+
+function emptyBoard() {
+  var r, c;
+  board = [];
+  for (r = 0; r < 12; r++) {
+    board[r] = [];
+    for (c = 0; c < 5; c++) board[r][c] = null;
+  }
+}
+
+function inHome(r) {
+  return r >= 7 && r <= 11;
+}
+
+function isHQ(r, c) {
+  return (r == 0 || r == 11) && (c == 1 || c == 3);
+}
+
+function isCamp(r, c) {
+  var cells = [
+    [2,1], [2,3], [3,2], [4,1], [4,3],
+    [7,1], [7,3], [8,2], [9,1], [9,3]
+  ];
+  var i;
+  for (i = 0; i < cells.length; i++) {
+    if (cells[i][0] == r && cells[i][1] == c) return true;
+  }
+  return false;
+}
+
+function resetGame() {
+  emptyBoard();
+  var i;
+  for (i = 0; i < TYPES.length; i++) {
+    remaining[TYPES[i].id] = TYPES[i].count;
+  }
+
+  phase = "setup";
+  selected = null;
+  gameOver = false;
+  aiPending = false;
+
+  document.getElementById("status").innerHTML =
+    "布阵：选择棋种和明暗，再点击棋盘下方蓝色区域。";
+  refreshChoices();
+  render();
+}
+
+function refreshChoices() {
+  var s = document.getElementById("pieceType");
+  var previous = s.value;
+  var i, t, option, selectedIndex = -1;
+
+  while (s.options.length > 0) s.remove(0);
+
+  for (i = 0; i < TYPES.length; i++) {
+    t = TYPES[i];
+    if (remaining[t.id] > 0) {
+      option = document.createElement("option");
+      option.value = t.id;
+      option.text = t.name + " x " + remaining[t.id];
+      s.options.add(option);
+      if (t.id == previous) selectedIndex = s.options.length - 1;
+    }
+  }
+
+  if (s.options.length > 0) {
+    s.selectedIndex = selectedIndex >= 0 ? selectedIndex : 0;
+  }
+}
+
+function humanCount() {
+  var n = 0, r, c;
+  for (r = 7; r < 12; r++) {
+    for (c = 0; c < 5; c++) {
+      if (board[r][c] && board[r][c].side == 1) n++;
+    }
+  }
+  return n;
+}
+
+function addPiece(r, c, id, side) {
+  var open;
+  if (side == 1) {
+    open = document.getElementById("visibility").value == "open";
+  } else {
+    open = Math.random() < 0.5;
+  }
+  board[r][c] = {id:id, side:side, open:open};
+}
+
+function clickCell(r, c) {
+  if (gameOver || aiPending) return;
+
+  if (phase == "setup") {
+    if (!inHome(r)) {
+      document.getElementById("status").innerHTML =
+        "请在棋盘最下面五排的蓝色布阵区放棋。";
+      return;
+    }
+
+    if (board[r][c] && board[r][c].side == 1) {
+      remaining[board[r][c].id]++;
+      board[r][c] = null;
+      refreshChoices();
+      render();
+      document.getElementById("status").innerHTML =
+        "已撤回棋子。选择棋种和明暗后，再点空的布阵格。";
+      return;
+    }
+
+    var s = document.getElementById("pieceType");
+    if (!s.value || remaining[s.value] <= 0) {
+      document.getElementById("status").innerHTML =
+        "请先选择还有剩余数量的棋子。";
+      return;
+    }
+
+    var id = s.value;
+    if (id == "flag" && !isHQ(r, c)) {
+      document.getElementById("status").innerHTML =
+        "军旗只能放在底排的司令部格。";
+      return;
+    }
+    if (id == "mine" && r < 10) {
+      document.getElementById("status").innerHTML =
+        "地雷只能放在己方最后两排。";
+      return;
+    }
+    if (board[r][c]) {
+      document.getElementById("status").innerHTML =
+        "这个位置已有棋子；点己方已放置的棋子可以撤回。";
+      return;
+    }
+
+    addPiece(r, c, id, 1);
+    remaining[id]--;
+    refreshChoices();
+    render();
+    document.getElementById("status").innerHTML =
+      "已布置 " + humanCount() + " / 25。继续选择棋子并点击蓝色布阵格。";
+    return;
+  }
+
+  if (phase != "battle") return;
+
+  if (board[r][c] && board[r][c].side == 1) {
+    selected = [r, c];
+    render();
+    document.getElementById("status").innerHTML =
+      "已选中 " + nameOf(board[r][c].id) + "，请选择目标格。";
+    return;
+  }
+
+  if (selected) {
+    if (validMove(selected[0], selected[1], r, c, 1)) {
+      doMove(selected[0], selected[1], r, c, 1);
+      selected = null;
+      if (!gameOver) computerTurn();
+    } else {
+      document.getElementById("status").innerHTML = "这步不能走。";
+    }
+  }
+}
+
+function autoFill() {
+  if (phase != "setup") return;
+
+  var ids = [], i, j, id, spots, k, r, c;
+  for (i = 0; i < TYPES.length; i++) {
+    id = TYPES[i].id;
+    for (j = 0; j < remaining[id]; j++) ids.push(id);
+  }
+
+  for (i = 0; i < ids.length; i++) {
+    id = ids[i];
+    spots = [];
+
+    for (r = 7; r < 12; r++) {
+      for (c = 0; c < 5; c++) {
+        if (board[r][c]) continue;
+        if (id == "flag" && !isHQ(r, c)) continue;
+        if (id == "mine" && r < 10) continue;
+        spots.push([r, c]);
+      }
+    }
+
+    if (spots.length == 0) continue;
+    k = Math.floor(Math.random() * spots.length);
+    addPiece(spots[k][0], spots[k][1], id, 1);
+    remaining[id]--;
+  }
+
+  refreshChoices();
+  render();
+  document.getElementById("status").innerHTML =
+    "已自动补齐剩余布阵。";
+}
+
+function startBattle() {
+  if (phase != "setup") return;
+  if (humanCount() != 25) {
+    document.getElementById("status").innerHTML =
+      "请先布满 25 枚棋子，或点击“自动补齐布阵”。";
+    return;
+  }
+
+  var aiPieces = [];
+  var i, j;
+
+  for (i = 0; i < TYPES.length; i++) {
+    for (j = 0; j < TYPES[i].count; j++) aiPieces.push(TYPES[i].id);
+  }
+
+  var flagCols = [1, 3];
+  var flagCol = flagCols[Math.floor(Math.random() * 2)];
+  addPiece(0, flagCol, "flag", -1);
+  removeOne(aiPieces, "flag");
+
+  for (i = 0; i < 3; i++) {
+    var mineSpots = [];
+    var rr, cc;
+    for (rr = 0; rr <= 1; rr++) {
+      for (cc = 0; cc < 5; cc++) {
+        if (!board[rr][cc]) mineSpots.push([rr, cc]);
+      }
+    }
+    var ms = mineSpots[Math.floor(Math.random() * mineSpots.length)];
+    addPiece(ms[0], ms[1], "mine", -1);
+    removeOne(aiPieces, "mine");
+  }
+
+  shuffle(aiPieces);
+
+  var openSpots = [];
+  var ar, ac;
+  for (ar = 0; ar < 5; ar++) {
+    for (ac = 0; ac < 5; ac++) {
+      if (!board[ar][ac]) openSpots.push([ar, ac]);
+    }
+  }
+  shuffle(openSpots);
+
+  for (i = 0; i < aiPieces.length; i++) {
+    addPiece(openSpots[i][0], openSpots[i][1], aiPieces[i], -1);
+  }
+
+  phase = "battle";
+  selected = null;
+  render();
+  document.getElementById("status").innerHTML =
+    "对局开始，你先走。你的棋子和电脑棋子都可逐枚明暗混合。";
+}
+
+function removeOne(a, value) {
+  var i;
+  for (i = 0; i < a.length; i++) {
+    if (a[i] == value) {
+      a.splice(i, 1);
+      return;
+    }
+  }
+}
+
+function shuffle(a) {
+  var i, j, x;
+  for (i = a.length - 1; i > 0; i--) {
+    j = Math.floor(Math.random() * (i + 1));
+    x = a[i];
+    a[i] = a[j];
+    a[j] = x;
+  }
+}
+
+function validMove(r1, c1, r2, c2, side) {
+  if (r2 < 0 || r2 >= 12 || c2 < 0 || c2 >= 5) return false;
+
+  var p = board[r1][c1];
+  if (!p || p.side != side || p.id == "flag" || p.id == "mine") return false;
+  if (r1 == r2 && c1 == c2) return false;
+  if (board[r2][c2] && board[r2][c2].side == side) return false;
+  if (isHQ(r2, c2) || !canEnter(r2, c2, side)) return false;
+
+  var dr = Math.abs(r2 - r1);
+  var dc = Math.abs(c2 - c1);
+  if (dr + dc == 1) return true;
+  if (p.id == "engineer") return engineerRailPath(r1, c1, r2, c2);
+  return railStraightPath(r1, c1, r2, c2);
+}
+
+function isRailRow(r) {
+  return r == 1 || r == 3 || r == 5 || r == 6 || r == 8 || r == 10;
+}
+
+function isRailEdge(r1, c1, r2, c2) {
+  if (r1 == r2 && Math.abs(c1 - c2) == 1) return isRailRow(r1);
+  if (c1 == c2 && Math.abs(r1 - r2) == 1)
+    return c1 == 0 || c1 == 2 || c1 == 4;
+  return false;
+}
+
+function railStraightPath(r1, c1, r2, c2) {
+  if (r1 != r2 && c1 != c2) return false;
+
+  var dr = r2 == r1 ? 0 : (r2 > r1 ? 1 : -1);
+  var dc = c2 == c1 ? 0 : (c2 > c1 ? 1 : -1);
+  var r = r1;
+  var c = c1;
+
+  while (r != r2 || c != c2) {
+    var nr = r + dr;
+    var nc = c + dc;
+    if (!isRailEdge(r, c, nr, nc)) return false;
+    if ((nr != r2 || nc != c2) && board[nr][nc]) return false;
+    r = nr;
+    c = nc;
+  }
+  return true;
+}
+
+function engineerRailPath(r1, c1, r2, c2) {
+  var visited = [];
+  var queue = [[r1, c1]];
+  var q = 0;
+  var r, c, nr, nc, i;
+  var drs = [-1, 1, 0, 0];
+  var dcs = [0, 0, -1, 1];
+
+  for (r = 0; r < 12; r++) {
+    visited[r] = [];
+    for (c = 0; c < 5; c++) visited[r][c] = false;
+  }
+  visited[r1][c1] = true;
+
+  while (q < queue.length) {
+    r = queue[q][0];
+    c = queue[q][1];
+    q++;
+
+    for (i = 0; i < 4; i++) {
+      nr = r + drs[i];
+      nc = c + dcs[i];
+      if (nr < 0 || nr >= 12 || nc < 0 || nc >= 5) continue;
+      if (!isRailEdge(r, c, nr, nc)) continue;
+      if (nr == r2 && nc == c2) return true;
+      if (!board[nr][nc] && !visited[nr][nc]) {
+        visited[nr][nc] = true;
+        queue.push([nr, nc]);
+      }
+    }
+  }
+  return false;
+}
+
+function canEnter(r, c, side) {
+  if (board[r][c] && board[r][c].side != side && isCamp(r, c)) return false;
+  return true;
+}
+
+function doMove(r1, c1, r2, c2, side) {
+  var attacker = board[r1][c1];
+  var defender = board[r2][c2];
+  selected = null;
+
+  if (!defender) {
+    board[r2][c2] = attacker;
+    board[r1][c1] = null;
+  } else {
+    var result = fight(attacker, defender);
+
+    if (defender.id == "flag") {
+      board[r2][c2] = attacker;
+      board[r1][c1] = null;
+      gameOver = true;
+      render();
+      document.getElementById("status").innerHTML =
+        side == 1 ? "你夺得军旗，获胜！" : "电脑夺得你的军旗，你输了。";
+      return;
+    }
+
+    board[r2][c2] = result == 1 ? attacker : null;
+    board[r1][c1] = null;
+  }
+
+  render();
+
+  if (!gameOver) {
+    document.getElementById("status").innerHTML =
+      side == 1 ? "你走了一步，电脑回合。" : "电脑走了一步，你的回合。";
+
+    if (!hasMoves(-side)) {
+      gameOver = true;
+      document.getElementById("status").innerHTML =
+        side == 1 ? "电脑无棋可走，你获胜！" : "你无棋可走，电脑获胜。";
+    }
+  }
+}
+
+function fight(a, b) {
+  if (b.id == "flag") return 1;
+  if (a.id == "bomb" || b.id == "bomb") return 0;
+  if (b.id == "mine") return a.id == "engineer" ? 1 : -1;
+  if (a.rank > b.rank) return 1;
+  if (a.rank < b.rank) return -1;
+  return 0;
+}
+
+function hasMoves(side) {
+  var r, c, rr, cc;
+  for (r = 0; r < 12; r++) {
+    for (c = 0; c < 5; c++) {
+      if (!board[r][c] || board[r][c].side != side) continue;
+      for (rr = 0; rr < 12; rr++) {
+        for (cc = 0; cc < 5; cc++) {
+          if (validMove(r, c, rr, cc, side)) return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function computerTurn() {
+  if (gameOver) return;
+  aiPending = true;
+
+  window.setTimeout(function() {
+    aiPending = false;
+
+    var moves = [];
+    var r, c, rr, cc, p, score;
+    var best = -999999;
+    var choices = [];
+
+    for (r = 0; r < 12; r++) {
+      for (c = 0; c < 5; c++) {
+        p = board[r][c];
+        if (!p || p.side != -1) continue;
+
+        for (rr = 0; rr < 12; rr++) {
+          for (cc = 0; cc < 5; cc++) {
+            if (validMove(r, c, rr, cc, -1)) moves.push([r, c, rr, cc]);
+          }
+        }
+      }
+    }
+
+    if (moves.length == 0) {
+      gameOver = true;
+      document.getElementById("status").innerHTML = "电脑无棋可走，你获胜！";
+      return;
+    }
+
+    for (var i = 0; i < moves.length; i++) {
+      r = moves[i][0];
+      c = moves[i][1];
+      rr = moves[i][2];
+      cc = moves[i][3];
+      p = board[r][c];
+      score = Math.random() * 4;
+
+      if (board[rr][cc] && board[rr][cc].side == 1) {
+        if (board[rr][cc].open) {
+          var target = board[rr][cc];
+          if (target.id == "flag") score += 1000;
+          else if (target.id == "mine") score += p.id == "engineer" ? 30 : -20;
+          else if (p.id == "bomb") score += 10;
+          else score += (p.rank - target.rank) * 4;
+        } else {
+          score += 8;
+        }
+      }
+
+      if (rr >= 5 && rr <= 6) score += 2;
+
+      if (score > best) {
+        best = score;
+        choices = [moves[i]];
+      } else if (score == best) {
+        choices.push(moves[i]);
+      }
+    }
+
+    var m = choices[Math.floor(Math.random() * choices.length)];
+    doMove(m[0], m[1], m[2], m[3], -1);
+  }, 350);
+}
+
+function railStyle(r, c) {
+  var style = "";
+  if (c < 4 && isRailEdge(r, c, r, c + 1))
+    style += "border-right:3px double #76694f;";
+  if (r < 11 && isRailEdge(r, c, r + 1, c))
+    style += "border-bottom:3px double #76694f;";
+  return style;
+}
+function render() {
+  var html = "<table>";
+  var r, c, p, label, cls, style;
+
+  for (r = 0; r < 12; r++) {
+    html += "<tr>";
+    for (c = 0; c < 5; c++) {
+      cls = isCamp(r, c) ? "camp" : (isHQ(r, c) ? "hq" : "rail" );
+      style = railStyle(r, c);
+      if (selected && selected[0] == r && selected[1] == c) cls += " selected";
+
+      label = "";
+      p = board[r][c];
+
+      if (p) {
+        if (p.side == 1 || p.open) label = nameOf(p.id);
+        else label = "暗棋";
+        cls += p.side == 1 ? " human" : " ai";
+      } else if (phase == "setup" && r >= 7) {
+        cls += " deploy";
+        label = isHQ(r, c) ? "司令部" : "点此布阵";
+      } else if (isCamp(r, c)) {
+        label = "行营";
+      } else if (isHQ(r, c)) {
+        label = "司令部";
+      }
+
+      html += '<td class="' + cls + '" style="' + style + '" onclick="clickCell(' +
+        r + ',' + c + ')">' + label + "</td>";
+    }
+    html += "</tr>";
+  }
+  html += "</table>";
+
+  document.getElementById("board").innerHTML = html;
+  document.getElementById("count").innerHTML =
+    phase == "setup" ? "布阵进度：" + humanCount() + " / 25" : "人机对弈中";
+}
+
+window.onload = function() {
+  window.resizeTo(760, 820);
+  resetGame();
+};
+</script>
+</head>
+
+<body>
+<h2>陆战棋 · 人机版</h2>
+
+<div class="controls">
+  本次放置棋子：
+  <select id="visibility">
+    <option value="hidden">暗棋</option>
+    <option value="open">明棋</option>
+  </select>
+
+  <select id="pieceType"></select>
+  <button onclick="autoFill()">自动补齐布阵</button>
+  <button onclick="startBattle()">开始对局</button>
+  <button onclick="resetGame()">重新开始</button>
+</div>
+
+<div id="status"></div>
+<div id="count"></div>
+<div id="board"></div>
+<div id="legend">
+  蓝色布阵区在棋盘下方五排。明暗按每枚棋子放置时的选择确定；电脑棋子逐枚随机明暗。
+  粗线为铁路：普通棋子可沿铁路直线走多格，工兵可沿铁路转弯；其他相邻格可走一步。绿色为行营，粉色为司令部。
+</div>
+</body>
+</html>
