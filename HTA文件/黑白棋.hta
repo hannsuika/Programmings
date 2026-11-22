@@ -1,0 +1,338 @@
+<html>
+<head>
+<meta http-equiv="X-UA-Compatible" content="IE=9">
+<title>黑白棋</title>
+<hta:application
+  id="app"
+  applicationname="黑白棋"
+  border="thin"
+  caption="yes"
+  maximizebutton="no"
+  minimizebutton="yes"
+  scroll="no"
+  singleinstance="yes"
+/>
+<style>
+body { font-family: "Microsoft YaHei", sans-serif; background: #f3f5f2; color: #222; text-align: center; }
+h2 { margin-bottom: 8px; }
+.controls { margin: 12px; }
+select, button { font-size: 15px; padding: 5px 8px; margin: 3px; }
+#status { min-height: 24px; margin: 10px; font-weight: bold; }
+table { margin: 0 auto; border-collapse: collapse; background: #176b3a; border: 4px solid #154c2d; }
+td { width: 56px; height: 56px; border: 1px solid #d5e5d7; cursor: pointer; }
+.piece { width: 42px; height: 42px; margin: auto; border-radius: 50%; box-shadow: 1px 2px 3px #333; }
+.black { background: #171717; }
+.white { background: #fff; border: 1px solid #bbb; }
+.hint { width: 10px; height: 10px; margin: auto; border-radius: 50%; background: #a9d8a9; }
+#score { margin: 10px; }
+</style>
+<script language="JavaScript">
+var board = [];
+var current = 1;
+var humanSide = 1;
+var computerSide = -1;
+var gameMode = "computer";
+var gameOver = false;
+var aiPending = false;
+
+var directions = [
+  [-1, -1], [-1, 0], [-1, 1],
+  [0, -1],            [0, 1],
+  [1, -1],  [1, 0],   [1, 1]
+];
+
+var weights = [
+  [120, -25, 20,  5,  5, 20, -25, 120],
+  [-25, -45, -5, -5, -5, -5, -45, -25],
+  [ 20,  -5, 15,  3,  3, 15,  -5,  20],
+  [  5,  -5,  3,  3,  3,  3,  -5,   5],
+  [  5,  -5,  3,  3,  3,  3,  -5,   5],
+  [ 20,  -5, 15,  3,  3, 15,  -5,  20],
+  [-25, -45, -5, -5, -5, -5, -45, -25],
+  [120, -25, 20,  5,  5, 20, -25, 120]
+];
+
+function newGame() {
+  gameMode = document.getElementById("mode").value;
+  humanSide = document.getElementById("side").value == "black" ? 1 : -1;
+  computerSide = -humanSide;
+  current = 1;
+  gameOver = false;
+  aiPending = false;
+
+  board = [];
+  var r, c;
+  for (r = 0; r < 8; r++) {
+    board[r] = [];
+    for (c = 0; c < 8; c++) board[r][c] = 0;
+  }
+  board[3][3] = -1;
+  board[3][4] = 1;
+  board[4][3] = 1;
+  board[4][4] = -1;
+
+  prepareTurn();
+}
+
+function sideName(side) {
+  return side == 1 ? "黑棋" : "白棋";
+}
+
+function inside(r, c) {
+  return r >= 0 && r < 8 && c >= 0 && c < 8;
+}
+
+function flipsFor(b, r, c, side) {
+  var all = [];
+  if (!inside(r, c) || b[r][c] != 0) return all;
+
+  var d, dr, dc, nr, nc, line;
+  for (d = 0; d < directions.length; d++) {
+    dr = directions[d][0];
+    dc = directions[d][1];
+    nr = r + dr;
+    nc = c + dc;
+    line = [];
+
+    while (inside(nr, nc) && b[nr][nc] == -side) {
+      line.push([nr, nc]);
+      nr += dr;
+      nc += dc;
+    }
+    if (line.length > 0 && inside(nr, nc) && b[nr][nc] == side) {
+      all = all.concat(line);
+    }
+  }
+  return all;
+}
+
+function legalMoves(b, side) {
+  var moves = [];
+  var r, c;
+  for (r = 0; r < 8; r++) {
+    for (c = 0; c < 8; c++) {
+      if (flipsFor(b, r, c, side).length > 0) moves.push([r, c]);
+    }
+  }
+  return moves;
+}
+
+function copyBoard(b) {
+  var result = [];
+  var r;
+  for (r = 0; r < 8; r++) result[r] = b[r].slice(0);
+  return result;
+}
+
+function makeMove(b, r, c, side) {
+  var next = copyBoard(b);
+  var flips = flipsFor(b, r, c, side);
+  var i;
+  next[r][c] = side;
+  for (i = 0; i < flips.length; i++) {
+    next[flips[i][0]][flips[i][1]] = side;
+  }
+  return next;
+}
+
+function countPieces(b, side) {
+  var total = 0;
+  var r, c;
+  for (r = 0; r < 8; r++) {
+    for (c = 0; c < 8; c++) {
+      if (b[r][c] == side) total++;
+    }
+  }
+  return total;
+}
+
+function evaluate(b, side) {
+  var score = 0;
+  var r, c;
+  for (r = 0; r < 8; r++) {
+    for (c = 0; c < 8; c++) {
+      if (b[r][c] == side) score += weights[r][c];
+      else if (b[r][c] == -side) score -= weights[r][c];
+    }
+  }
+  score += 4 * (legalMoves(b, side).length - legalMoves(b, -side).length);
+  return score;
+}
+
+function search(b, side, depth, alpha, beta, passed) {
+  var moves = legalMoves(b, side);
+  var i, value, best;
+
+  if (moves.length == 0) {
+    if (passed || legalMoves(b, -side).length == 0) {
+      return (countPieces(b, side) - countPieces(b, -side)) * 10000;
+    }
+    return -search(b, -side, depth - 1, -beta, -alpha, true);
+  }
+
+  if (depth <= 0) return evaluate(b, side);
+
+  best = -10000000;
+  for (i = 0; i < moves.length; i++) {
+    value = -search(
+      makeMove(b, moves[i][0], moves[i][1], side),
+      -side, depth - 1, -beta, -alpha, false
+    );
+    if (value > best) best = value;
+    if (value > alpha) alpha = value;
+    if (alpha >= beta) break;
+  }
+  return best;
+}
+
+function computerMove() {
+  aiPending = false;
+  if (gameOver || gameMode != "computer" || current != computerSide) return;
+
+  var moves = legalMoves(board, computerSide);
+  if (moves.length == 0) {
+    prepareTurn();
+    return;
+  }
+
+  var bestMove = moves[0];
+  var bestScore = -10000000;
+  var i, score;
+
+  for (i = 0; i < moves.length; i++) {
+    score = -search(
+      makeMove(board, moves[i][0], moves[i][1], computerSide),
+      -computerSide, 3, -10000000, 10000000, false
+    );
+    if (score > bestScore) {
+      bestScore = score;
+      bestMove = moves[i];
+    }
+  }
+
+  board = makeMove(board, bestMove[0], bestMove[1], computerSide);
+  current = -computerSide;
+  prepareTurn();
+}
+
+function playAt(r, c) {
+  if (gameOver || (gameMode == "computer" && current != humanSide)) return;
+
+  var flips = flipsFor(board, r, c, current);
+  if (flips.length == 0) {
+    document.getElementById("status").innerHTML = "这里不能落子，请选择有提示点的位置。";
+    return;
+  }
+
+  board = makeMove(board, r, c, current);
+  current = -current;
+  prepareTurn();
+}
+
+function prepareTurn() {
+  if (gameOver) return;
+
+  var moves = legalMoves(board, current);
+  var skipped = false;
+
+  if (moves.length == 0) {
+    if (legalMoves(board, -current).length == 0) {
+      finishGame();
+      return;
+    }
+    current = -current;
+    skipped = true;
+    moves = legalMoves(board, current);
+  }
+
+  renderBoard();
+
+  var message = skipped
+    ? sideName(-current) + "没有合法棋步，自动跳过；"
+    : "";
+  message += sideName(current) + "走棋。";
+
+  if (gameMode == "computer" && current == computerSide) {
+    message += "电脑思考中…";
+    document.getElementById("status").innerHTML = message;
+    if (!aiPending) {
+      aiPending = true;
+      window.setTimeout(computerMove, 150);
+    }
+  } else {
+    document.getElementById("status").innerHTML = message;
+  }
+}
+
+function renderBoard() {
+  var html = "<table>";
+  var r, c, piece, hints, i, found;
+  hints = (gameMode == "local" || current == humanSide) ? legalMoves(board, current) : [];
+
+  for (r = 0; r < 8; r++) {
+    html += "<tr>";
+    for (c = 0; c < 8; c++) {
+      piece = "";
+      if (board[r][c] == 1) piece = '<div class="piece black"></div>';
+      else if (board[r][c] == -1) piece = '<div class="piece white"></div>';
+      else {
+        found = false;
+        for (i = 0; i < hints.length; i++) {
+          if (hints[i][0] == r && hints[i][1] == c) {
+            found = true;
+            break;
+          }
+        }
+        if (found) piece = '<div class="hint"></div>';
+      }
+      html += '<td onclick="playAt(' + r + ',' + c + ')">' + piece + "</td>";
+    }
+    html += "</tr>";
+  }
+  html += "</table>";
+  document.getElementById("board").innerHTML = html;
+
+  document.getElementById("score").innerHTML =
+    "黑棋：" + countPieces(board, 1) + "　白棋：" + countPieces(board, -1);
+}
+
+function finishGame() {
+  gameOver = true;
+  renderBoard();
+
+  var black = countPieces(board, 1);
+  var white = countPieces(board, -1);
+  var result = black == white ? "平局！" : (black > white ? "黑棋获胜！" : "白棋获胜！");
+  document.getElementById("status").innerHTML =
+    "游戏结束，" + result + "（黑 " + black + " : 白 " + white + "）";
+}
+
+window.onload = function () {
+  window.resizeTo(760, 780); // 宽 760、高 780，单位是像素
+  newGame();
+};
+
+</script>
+</head>
+<body>
+<h2>黑白棋</h2>
+
+<div class="controls">
+  模式：
+  <select id="mode" onchange="newGame()">
+    <option value="computer">人机对弈</option>
+    <option value="local">本地双人</option>
+  </select>
+  人类执子：
+  <select id="side" onchange="newGame()">
+    <option value="black">黑棋（先手）</option>
+    <option value="white">白棋（后手）</option>
+  </select>
+  <button onclick="newGame()">重新开始</button>
+</div>
+
+<div id="status"></div>
+<div id="board"></div>
+<div id="score"></div>
+</body>
+</html>
